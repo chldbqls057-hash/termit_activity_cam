@@ -122,6 +122,12 @@ def _split_touching_contour(
     seeds = [i for i in range(1, count) if int(stats[i, cv2.CC_STAT_AREA]) >= 3]
     if len(seeds) < 2:
         return [contour]
+    # 씨앗(피크)이 너무 많으면 '개체 여러 마리가 겹친 덩어리'가 아니라 헝겊 주름/종이
+    # 테두리처럼 요철이 많은 이물질일 가능성이 높다. 이런 경우 잘게 쪼개면 가짜 개체가
+    # 무더기로 생기므로, 분리를 포기하고 원본 컨투어를 그대로 둔다(면적/원형도 필터가
+    # 뒤에서 걸러낸다).
+    if len(seeds) > split_max_parts * 3:
+        return [contour]
     seeds.sort(key=lambda i: int(stats[i, cv2.CC_STAT_AREA]), reverse=True)
     seeds = seeds[:split_max_parts]
 
@@ -167,6 +173,7 @@ def detect_objects(
     split_peak_ratio: float = 0.62,
     split_max_parts: int = 4,
     cluster_area_multiplier: float = 3.0,
+    min_circularity: float = 0.35,
 ) -> Tuple[List[Tuple[float, float, float]], np.ndarray]:
     """기준(빈 여과지) 영상과의 차이를 이용해 개체 후보를 검출한다.
 
@@ -177,6 +184,9 @@ def detect_objects(
             큰 뭉치는 원래대로라면 max_area를 넘어 완전히 버려져 '검출 자체가 안 되는'
             문제가 생긴다. 이런 미분리 뭉치는 max_area의 이 배수까지는 최소 1개체로라도
             검출 목록에 남겨서, 화면에서 사라지는 대신 하나로 뭉쳐 보이게 한다.
+        min_circularity: 4π·면적/둘레² 원형도 최소값(0~1, 완전한 원=1). 흰개미는 대체로
+            둥글둥글한 타원형이지만, 헝겊 주름·종이 테두리 같은 이물질은 가늘고 구불구불해
+            원형도가 매우 낮다(대개 0.1 이하). 이 값 미만인 컨투어는 후보에서 제외한다.
 
     Returns:
         detections: [(cx, cy, area), ...]  (x좌표 기준 정렬, 재현성 확보)
@@ -205,6 +215,18 @@ def detect_objects(
     detections = []
     for c in contours:
         raw_area = cv2.contourArea(c)
+        raw_perimeter = cv2.arcLength(c, True)
+        raw_circularity = (
+            (4.0 * np.pi * raw_area / (raw_perimeter * raw_perimeter)) if raw_perimeter > 0 else 0.0
+        )
+        # watershed는 얇고 구불구불한 선(헝겊 주름, 종이 테두리 등)도 여러 조각으로
+        # 쪼개버릴 수 있는데, 그 조각 하나하나는 짧고 둥글둥글해서 개별 원형도 검사를
+        # 통과해버린다. 그래서 분리를 시도하기 '전' 원본 덩어리 자체의 원형도를 먼저
+        # 확인해, 애초에 개체 뭉치라고 보기 힘든 형태(원형도가 매우 낮음)면 분리 자체를
+        # 시도하지 않고 통째로 버린다. (실흰개미 여러 마리가 겹친 덩어리는 이보다는
+        # 훨씬 뭉툭한 형태라 이 문턱값을 넘는다)
+        if raw_area >= min_area and raw_circularity < min_circularity * 0.4:
+            continue
         candidates = (
             _split_touching_contour(
                 c, thresh.shape, min_area, split_area_factor, split_peak_ratio, split_max_parts
@@ -227,6 +249,13 @@ def detect_objects(
             if area > max_area:
                 if not (unresolved_cluster and area <= max_area * cluster_area_multiplier):
                     continue
+            perimeter = cv2.arcLength(candidate, True)
+            circularity = (4.0 * np.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
+            # 여러 개체가 뭉친 큰 덩어리는 낱개보다 원형도가 다소 떨어질 수 있으므로
+            # 완전히 같은 기준을 적용하지 않고 문턱값을 낮춰준다.
+            required_circularity = min_circularity * 0.6 if unresolved_cluster else min_circularity
+            if circularity < required_circularity:
+                continue
             m = cv2.moments(candidate)
             if m["m00"] == 0:
                 continue
@@ -247,7 +276,7 @@ class TrackedObject:
     centroid: Tuple[float, float]
     first_seen: float
     last_seen: float
-    last_move_time: float
+    last_move_time: Optional[float] = None
     missed_frames: int = 0
     motion_reference: Optional[Tuple[float, float]] = None
     total_distance: float = 0.0
@@ -283,7 +312,7 @@ class CentroidTracker:
         self.next_id += 1
         self.objects[oid] = TrackedObject(
             object_id=oid, centroid=centroid,
-            first_seen=timestamp, last_seen=timestamp, last_move_time=timestamp,
+            first_seen=timestamp, last_seen=timestamp, last_move_time=None,
         )
         return oid
 
@@ -371,21 +400,33 @@ class CentroidTracker:
 # 4. 상태 분류
 # ----------------------------------------------------------------
 def classify_state(obj: TrackedObject, now: float, no_movement_threshold_sec: float,
-                    observing_grace_sec: float = 5.0) -> str:
+                    observing_grace_sec: float = 5.0,
+                    minimum_track_age_seconds: Optional[float] = None) -> str:
     """개체의 현재 상태를 분류한다.
 
-    - 갓 등장한 개체(관찰 유예시간 이내)            -> 관찰중
-    - 최근(유예시간 이내)에 실제로 움직인 개체        -> 활동
-    - 움직이지 않은 지 무이동 판정시간을 넘지 않은 개체 -> 관찰중
-    - 무이동 판정시간을 넘긴 개체                    -> 사멸의심 (사망 확정 아님)
-    """
-    age = now - obj.first_seen
-    since_move = now - obj.last_move_time
+    - 최근(활동 인정 시간 이내)에 실제로 움직인 개체        -> 활동 (갓 등장한 개체라도 즉시 반영)
+    - 아직 나이가 어린(최소 추적 나이 이내) 개체            -> 관찰중 (성급한 사멸의심 방지)
+    - 움직이지 않은 지 무이동 판정시간을 넘지 않은 개체      -> 관찰중
+    - 무이동 판정시간을 넘긴 개체                          -> 사멸의심 (사망 확정 아님)
 
-    if age < observing_grace_sec:
-        return STATE_OBSERVING
-    if since_move < observing_grace_sec:
+    이전 버전은 "나이가 어리면 무조건 관찰중"을 가장 먼저 체크했기 때문에, 등장하자마자
+    실제로 움직인 개체까지 관찰 유예시간 동안 활동으로 인정받지 못하는 문제가 있었다.
+    이제는 '최근 실제 이동 여부'를 나이와 무관하게 가장 먼저 확인하고, 최소 추적 나이는
+    (아직 한 번도 움직이지 않은) 신규 개체가 너무 빨리 사멸의심으로 넘어가는 것을 막는
+    별도의 안전장치로만 쓴다. minimum_track_age_seconds를 지정하지 않으면 기존과 동일하게
+    observing_grace_sec 값을 그대로 사용한다.
+    """
+    if minimum_track_age_seconds is None:
+        minimum_track_age_seconds = observing_grace_sec
+
+    if obj.last_move_time is not None and now - obj.last_move_time < observing_grace_sec:
         return STATE_ACTIVE
-    if since_move < no_movement_threshold_sec:
+
+    age = now - obj.first_seen
+    if age < minimum_track_age_seconds:
+        return STATE_OBSERVING
+
+    inactive_since = obj.last_move_time if obj.last_move_time is not None else obj.first_seen
+    if now - inactive_since < no_movement_threshold_sec:
         return STATE_OBSERVING
     return STATE_DEAD_SUSPECT

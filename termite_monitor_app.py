@@ -46,6 +46,11 @@ class TermiteMonitorApp:
     REFERENCE_CAPTURE_FRAMES = 15
     # '분리 민감도' 콤보박스 -> watershed 피크 임계 비율. 낮을수록 더 쉽게 두 덩어리로 나눈다.
     SPLIT_SENSITIVITY_MAP = {"낮음": 0.56, "보통": 0.62, "높음": 0.69}
+    # 신규 ID 발급 전 요구하는 시간축 안정성: 최근 몇 프레임을 볼지 / 그중 몇 번 이상
+    # 근접 검출돼야 '진짜'로 인정할지. 반사·주름처럼 순간적으로 깜빡이는 오검출을 거른다.
+    STABILITY_HISTORY_LEN = 4
+    STABILITY_MIN_HITS = 2
+    STABILITY_MATCH_RADIUS_PX = 25
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -72,6 +77,7 @@ class TermiteMonitorApp:
         self.min_area = tk.IntVar(value=15)
         self.max_area = tk.IntVar(value=2000)
         self.sensitivity = tk.IntVar(value=25)
+        self.min_circularity = tk.DoubleVar(value=0.35)
         self.log_interval_sec = 1.0
 
         self.session_dir = None
@@ -112,7 +118,7 @@ class TermiteMonitorApp:
 
         cam_frame = ttk.LabelFrame(right, text="① 카메라")
         cam_frame.pack(fill="x", pady=4)
-        self.camera_combo = ttk.Combobox(cam_frame, values=[0, 1, 2, 3, 4], textvariable=self.camera_index,
+        self.camera_combo = ttk.Combobox(cam_frame, values=list(range(10)), textvariable=self.camera_index,
                                           width=5, state="readonly")
         self.camera_combo.pack(side="left", padx=4, pady=4)
         ttk.Button(cam_frame, text="연결", command=self.connect_camera).pack(side="left", padx=4)
@@ -140,6 +146,14 @@ class TermiteMonitorApp:
         self._add_param_row(param_frame, "최소 검출면적(px²)", self.min_area, 3, 500)
         self._add_param_row(param_frame, "최대 검출면적(px²)", self.max_area, 100, 20000)
         self._add_param_row(param_frame, "민감도(임계값)", self.sensitivity, 5, 100)
+        self._add_param_row(param_frame, "최소 원형도(0~1)", self.min_circularity, 0.0, 1.0, increment=0.05)
+        circularity_note = ttk.Label(
+            param_frame,
+            text="낮출수록 길쭉/구불구불한 모양도 개체로 인정합니다. 헝겊 주름·종이 테두리 같은"
+                 " 이물질이 개체로 잘못 잡히면 값을 높이세요(둥근 개체만 인정).",
+            wraplength=340, foreground="#555",
+        )
+        circularity_note.pack(fill="x", padx=4, pady=(0, 4))
 
         self.split_touching = tk.BooleanVar(value=True)
         ttk.Checkbutton(param_frame, text="겹친 개체 자동 분리", variable=self.split_touching).pack(
@@ -205,26 +219,31 @@ class TermiteMonitorApp:
         self.log_box.pack(fill="x")
         self._log("프로그램을 시작했습니다. ①카메라 연결 → ②영역 지정 → ③기준영상 촬영 → ⑤판독 시작 순서로 진행하세요.")
 
-    def _add_param_row(self, parent, label, var, frm, to):
+    def _add_param_row(self, parent, label, var, frm, to, increment=1):
         row = ttk.Frame(parent)
         row.pack(fill="x", padx=4, pady=2)
         ttk.Label(row, text=label, width=16).pack(side="left")
-        ttk.Spinbox(row, from_=frm, to=to, textvariable=var, width=8).pack(side="left")
+        ttk.Spinbox(row, from_=frm, to=to, increment=increment, textvariable=var, width=8).pack(side="left")
 
     # ------------------------------------------------------------
     # 카메라
     # ------------------------------------------------------------
     def _refresh_camera_list(self):
+        # 스마트폰(아이폰/갤럭시)을 가상 웹캠 앱으로 연결하면 보통 기존 내장/USB 카메라보다
+        # 뒤쪽 인덱스에 잡히므로 넉넉히 0~9까지 훑는다.
         found = []
-        for i in range(5):
+        for i in range(10):
             cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
             if cap.isOpened():
-                found.append(i)
+                ok, _ = cap.read()
+                if ok:
+                    found.append(i)
             cap.release()
         if not found:
             found = [0]
         self.camera_combo.config(values=found)
-        self._log(f"감지된 카메라 인덱스: {found}")
+        self._log(f"감지된 카메라 인덱스: {found}"
+                  " (스마트폰은 DroidCam/EpocCam/Camo/Iriun 같은 가상 웹캠 앱을 설치·실행해야 목록에 나타납니다)")
 
     def connect_camera(self):
         idx = self.camera_index.get()
@@ -232,7 +251,19 @@ class TermiteMonitorApp:
             self.cap.release()
         cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
         if not cap.isOpened():
-            messagebox.showerror(APP_TITLE, f"카메라(index={idx})를 열 수 없습니다.\nOsmo가 '웹캠' 모드인지 확인하세요.")
+            cap.release()
+            cap = cv2.VideoCapture(idx, cv2.CAP_ANY)  # 일부 가상 웹캠 드라이버는 DSHOW 대신 이쪽에서만 열림
+        if not cap.isOpened():
+            messagebox.showerror(
+                APP_TITLE,
+                f"카메라(index={idx})를 열 수 없습니다.\n"
+                "- Osmo라면 '웹캠' 모드인지 확인하세요.\n"
+                "- 스마트폰(아이폰/갤럭시)은 그 자체로 Windows 표준 웹캠으로 인식되지 않습니다.\n"
+                "  갤럭시(안드로이드)는 DroidCam이나 Iriun Webcam,\n"
+                "  아이폰은 EpocCam(Kinoni)이나 Camo(Reincubate), Iriun Webcam 같은 앱을\n"
+                "  PC와 휴대폰 양쪽에 설치해 가상 웹캠으로 연결한 뒤,\n"
+                "  '목록 새로고침'으로 해당 카메라 인덱스를 찾아 선택하세요.",
+            )
             return
         self.cap = cap
         self._log(f"카메라 index {idx} 연결됨")
@@ -448,6 +479,7 @@ class TermiteMonitorApp:
                 sensitivity=self.sensitivity.get(),
                 split_touching=self.split_touching.get(),
                 split_peak_ratio=self.SPLIT_SENSITIVITY_MAP.get(self.split_sensitivity.get(), 0.62),
+                min_circularity=self.min_circularity.get(),
             )
             detections = self._keep_stable_detections(detections)
             centroids = [(d[0], d[1]) for d in detections]
@@ -478,15 +510,27 @@ class TermiteMonitorApp:
             self.video_writer.write(display)
 
     def _keep_stable_detections(self, detections):
+        """최근 몇 프레임 중 일정 횟수 이상 같은 자리에 나타난 검출만 통과시킨다.
+
+        반사·주름처럼 순간적으로 한두 프레임만 반짝이는 오검출은 시간축에서 걸러지고,
+        실제로 존재하는 흰개미(연속으로 검출됨)는 몇 프레임(약 0.1초) 지연 후 통과한다.
+        """
+        radius_sq = self.STABILITY_MATCH_RADIUS_PX ** 2
         current_centroids = [(d[0], d[1]) for d in detections]
-        previous_centroids = self.detection_history[-1] if self.detection_history else []
-        stable = [
-            detection for detection in detections
-            if any((detection[0] - x) ** 2 + (detection[1] - y) ** 2 <= 25 ** 2
-                   for x, y in previous_centroids)
-        ]
+        stable = []
+        for detection in detections:
+            hits = sum(
+                1
+                for previous_centroids in self.detection_history
+                if any(
+                    (detection[0] - x) ** 2 + (detection[1] - y) ** 2 <= radius_sq
+                    for x, y in previous_centroids
+                )
+            )
+            if hits >= self.STABILITY_MIN_HITS:
+                stable.append(detection)
         self.detection_history.append(current_centroids)
-        self.detection_history = self.detection_history[-2:]
+        self.detection_history = self.detection_history[-(self.STABILITY_HISTORY_LEN - 1):]
         return stable
 
     def _write_logs(self, objects, now, counts):
