@@ -267,6 +267,117 @@ def detect_objects(
     return detections, thresh
 
 
+def detect_motion_objects(
+    gray_current: np.ndarray,
+    gray_previous: Optional[np.ndarray],
+    roi_mask: Optional[np.ndarray],
+    min_area: int = 8,
+    max_area: int = 4000,
+    sensitivity: int = 18,
+) -> List[Tuple[float, float, float]]:
+    """인접 프레임의 변화에서 실제로 움직인 개체 후보를 찾는다."""
+    if gray_previous is None:
+        return []
+    if gray_current.shape != gray_previous.shape:
+        gray_previous = cv2.resize(gray_previous, (gray_current.shape[1], gray_current.shape[0]))
+
+    current = cv2.GaussianBlur(gray_current, (5, 5), 0)
+    previous = cv2.GaussianBlur(gray_previous, (5, 5), 0)
+    diff = cv2.absdiff(current, previous)
+    _, motion = cv2.threshold(diff, int(sensitivity), 255, cv2.THRESH_BINARY)
+    if roi_mask is not None:
+        motion = cv2.bitwise_and(motion, motion, mask=roi_mask)
+
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    motion = cv2.morphologyEx(motion, cv2.MORPH_OPEN, open_kernel, iterations=1)
+    motion = cv2.morphologyEx(motion, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+
+    contours, _ = cv2.findContours(motion, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detections = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area or area > max_area:
+            continue
+        moments = cv2.moments(contour)
+        if moments["m00"] == 0:
+            continue
+        detections.append((moments["m10"] / moments["m00"], moments["m01"] / moments["m00"], area))
+    detections.sort(key=lambda detection: detection[0])
+    return detections
+
+
+def detect_contour_objects(
+    frame_current: np.ndarray,
+    roi_mask: Optional[np.ndarray],
+    min_area: int = 15,
+    max_area: int = 2000,
+    sensitivity: int = 25,
+    split_touching: bool = True,
+    split_peak_ratio: float = 0.62,
+    min_circularity: float = 0.20,
+) -> Tuple[List[Tuple[float, float, float]], np.ndarray, List[np.ndarray]]:
+    """현재 영상의 국부 대비에서 개체 외곽 컨투어를 직접 검출한다."""
+    if frame_current.ndim == 3:
+        gray_current = cv2.cvtColor(frame_current, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(frame_current, cv2.COLOR_BGR2HSV)
+        warm_color = cv2.inRange(hsv, np.array([0, 20, 45]), np.array([45, 255, 255]))
+    else:
+        gray_current = frame_current
+        warm_color = np.full_like(gray_current, 255)
+
+    kernel_size = max(21, min(61, int(round(min(gray_current.shape[:2]) * 0.08))))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    local_contrast = cv2.morphologyEx(gray_current, cv2.MORPH_TOPHAT, kernel)
+    _, thresh = cv2.threshold(local_contrast, int(sensitivity), 255, cv2.THRESH_BINARY)
+    thresh = cv2.bitwise_and(thresh, warm_color)
+    if roi_mask is not None:
+        thresh = cv2.bitwise_and(thresh, thresh, mask=roi_mask)
+
+    clean_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, clean_kernel, iterations=1)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, clean_kernel, iterations=1)
+
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detections = []
+    valid_contours = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area or area > max_area:
+            continue
+        candidates = (
+            _split_touching_contour(
+                contour, thresh.shape, min_area, 2.2, split_peak_ratio, 4
+            )
+            if split_touching
+            else [contour]
+        )
+        for candidate in candidates:
+            candidate_area = cv2.contourArea(candidate)
+            if candidate_area < min_area or candidate_area > max_area:
+                continue
+            perimeter = cv2.arcLength(candidate, True)
+            if perimeter == 0:
+                continue
+            circularity = 4.0 * np.pi * candidate_area / (perimeter * perimeter)
+            if circularity < min_circularity:
+                continue
+            moments = cv2.moments(candidate)
+            if moments["m00"] == 0:
+                continue
+            detections.append(
+                (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"], candidate_area)
+            )
+            valid_contours.append(candidate)
+
+    order = np.argsort([detection[0] for detection in detections])
+    detections = [detections[index] for index in order]
+    valid_contours = [valid_contours[index] for index in order]
+    return detections, thresh, valid_contours
+
+
 # ----------------------------------------------------------------
 # 3. 중심점 기반 개체 추적기
 # ----------------------------------------------------------------
