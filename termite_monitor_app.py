@@ -23,6 +23,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 import cv2
+import numpy as np
 from PIL import Image, ImageTk
 
 from termite_core import (
@@ -39,6 +40,11 @@ DEFAULT_SAVE_ROOT = Path.home() / "Documents" / "TermiteMonitor_sessions"
 
 
 class TermiteMonitorApp:
+    # 패트리디쉬 테두리(그림자/반사가 생기기 쉬운 가장자리)를 검출 대상에서 살짝 제외
+    ROI_INNER_RATIO = 0.95
+    # 기준영상(빈 여과지) 촬영 시 잡음을 줄이기 위해 여러 프레임을 모아 중앙값을 사용
+    REFERENCE_CAPTURE_FRAMES = 15
+
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title(APP_TITLE)
@@ -59,10 +65,7 @@ class TermiteMonitorApp:
 
         self.tracker = CentroidTracker(max_distance=60, max_missed_frames=20, move_threshold_px=3)
 
-<<<<<<< HEAD
         self.expected_count = tk.IntVar(value=0)  # 예상 투입 개체 수
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         self.no_move_sec = tk.DoubleVar(value=300.0)  # 무이동 판정 시간(초), 기본 5분
         self.min_area = tk.IntVar(value=15)
         self.max_area = tk.IntVar(value=2000)
@@ -79,12 +82,9 @@ class TermiteMonitorApp:
 
         self.last_frame_bgr = None
         self.canvas_scale = 1.0
-<<<<<<< HEAD
         self.zoom = tk.DoubleVar(value=1.0)
         self.zoom_crop_origin = (0, 0)
         self.detection_history = []
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
 
         self._build_ui()
         self._poll_camera()
@@ -115,13 +115,10 @@ class TermiteMonitorApp:
         self.camera_combo.pack(side="left", padx=4, pady=4)
         ttk.Button(cam_frame, text="연결", command=self.connect_camera).pack(side="left", padx=4)
         ttk.Button(cam_frame, text="목록 새로고침", command=self._refresh_camera_list).pack(side="left", padx=4)
-<<<<<<< HEAD
         ttk.Label(cam_frame, text="확대").pack(side="left", padx=(8, 2))
         ttk.Scale(cam_frame, from_=1.0, to=3.0, variable=self.zoom, command=self._on_zoom_changed,
               length=100).pack(side="left", padx=2)
         ttk.Button(cam_frame, text="초기화", command=lambda: self.zoom.set(1.0)).pack(side="left", padx=2)
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
 
         roi_frame = ttk.LabelFrame(right, text="② 패트리디쉬 영역")
         roi_frame.pack(fill="x", pady=4)
@@ -136,10 +133,7 @@ class TermiteMonitorApp:
 
         param_frame = ttk.LabelFrame(right, text="④ 판독 파라미터")
         param_frame.pack(fill="x", pady=4)
-<<<<<<< HEAD
         self._add_param_row(param_frame, "예상 투입 개체 수", self.expected_count, 0, 1000)
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         self._add_param_row(param_frame, "무이동 판정(초)", self.no_move_sec, 10, 3600)
         self._add_param_row(param_frame, "최소 검출면적(px²)", self.min_area, 3, 500)
         self._add_param_row(param_frame, "최대 검출면적(px²)", self.max_area, 100, 20000)
@@ -149,6 +143,17 @@ class TermiteMonitorApp:
         run_frame.pack(fill="x", pady=4)
         ttk.Button(run_frame, text="▶ 판독 시작", command=self.start_analysis).pack(fill="x", padx=4, pady=2)
         ttk.Button(run_frame, text="■ 판독 정지", command=self.stop_analysis).pack(fill="x", padx=4, pady=2)
+
+        manual_frame = ttk.LabelFrame(right, text="수동 확인 (오탐 사멸의심 해제)")
+        manual_frame.pack(fill="x", pady=4)
+        manual_row = ttk.Frame(manual_frame)
+        manual_row.pack(fill="x", padx=4, pady=2)
+        ttk.Label(manual_row, text="ID").pack(side="left")
+        self.manual_track_id = tk.IntVar(value=0)
+        ttk.Spinbox(manual_row, from_=0, to=9999, textvariable=self.manual_track_id, width=6).pack(
+            side="left", padx=4)
+        ttk.Button(manual_row, text="이동 확인", command=self.manual_mark_moved).pack(side="left", padx=2)
+        ttk.Button(manual_frame, text="전체 ID 초기화", command=self.reset_tracks).pack(fill="x", padx=4, pady=2)
 
         save_frame = ttk.LabelFrame(right, text="⑥ 저장")
         save_frame.pack(fill="x", pady=4)
@@ -205,13 +210,10 @@ class TermiteMonitorApp:
         self.cap = cap
         self._log(f"카메라 index {idx} 연결됨")
 
-<<<<<<< HEAD
     def _on_zoom_changed(self, _value=None):
         if self.last_frame_bgr is not None:
             self._render_canvas(self.last_frame_bgr)
 
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
     # ------------------------------------------------------------
     # 영역 지정
     # ------------------------------------------------------------
@@ -227,7 +229,7 @@ class TermiteMonitorApp:
         cx, cy, r = result
         self.roi_center = (cx, cy)
         self.roi_radius = r
-        self.roi_mask = make_circular_mask(self.last_frame_bgr.shape, cx, cy, r)
+        self.roi_mask = make_circular_mask(self.last_frame_bgr.shape, cx, cy, r, inner_ratio=self.ROI_INNER_RATIO)
         self._log(f"패트리디쉬 자동 검출: 중심=({cx},{cy}), 반지름={r}px")
 
     def toggle_manual_roi(self):
@@ -238,28 +240,19 @@ class TermiteMonitorApp:
     def _on_canvas_press(self, event):
         if not self.manual_roi_mode:
             return
-<<<<<<< HEAD
         self.manual_center_tmp = (
             event.x / self.canvas_scale + self.zoom_crop_origin[0],
             event.y / self.canvas_scale + self.zoom_crop_origin[1],
         )
-=======
-        self.manual_center_tmp = (event.x / self.canvas_scale, event.y / self.canvas_scale)
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
 
     def _on_canvas_drag(self, event):
         if not self.manual_roi_mode or self.manual_center_tmp is None:
             return
         cx, cy = self.manual_center_tmp
-<<<<<<< HEAD
         x = event.x / self.canvas_scale + self.zoom_crop_origin[0]
         y = event.y / self.canvas_scale + self.zoom_crop_origin[1]
         dx = x - cx
         dy = y - cy
-=======
-        dx = event.x / self.canvas_scale - cx
-        dy = event.y / self.canvas_scale - cy
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         r = int((dx ** 2 + dy ** 2) ** 0.5)
         self.roi_center = (int(cx), int(cy))
         self.roi_radius = max(r, 5)
@@ -269,7 +262,8 @@ class TermiteMonitorApp:
             return
         if self.last_frame_bgr is not None:
             self.roi_mask = make_circular_mask(
-                self.last_frame_bgr.shape, self.roi_center[0], self.roi_center[1], self.roi_radius)
+                self.last_frame_bgr.shape, self.roi_center[0], self.roi_center[1], self.roi_radius,
+                inner_ratio=self.ROI_INNER_RATIO)
         self._log(f"수동 영역 지정 완료: 중심={self.roi_center}, 반지름={self.roi_radius}px")
         self.manual_roi_mode = False
         self.manual_center_tmp = None
@@ -278,12 +272,24 @@ class TermiteMonitorApp:
     # 기준영상
     # ------------------------------------------------------------
     def capture_reference(self):
-        if self.last_frame_bgr is None:
+        if self.cap is None or not self.cap.isOpened():
             messagebox.showwarning(APP_TITLE, "먼저 카메라를 연결하세요.")
             return
-        gray = cv2.cvtColor(self.last_frame_bgr, cv2.COLOR_BGR2GRAY)
-        self.reference_gray = gray.copy()
-        self._log("기준영상(빈 여과지) 촬영 완료. 이제 흰개미를 투입한 뒤 '판독 시작'을 누르세요.")
+        # 프레임 1장만 쓰면 카메라 센서 잡음이 그대로 기준영상에 남아 오검출로 이어지기 쉽다.
+        # 짧게 여러 프레임을 모아 중앙값을 취해 잡음을 줄인다.
+        frames = []
+        for _ in range(self.REFERENCE_CAPTURE_FRAMES):
+            ok, frame = self.cap.read()
+            if ok:
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        if not frames:
+            if self.last_frame_bgr is None:
+                messagebox.showwarning(APP_TITLE, "카메라 프레임을 읽지 못했습니다.")
+                return
+            frames = [cv2.cvtColor(self.last_frame_bgr, cv2.COLOR_BGR2GRAY)]
+        self.reference_gray = np.median(np.stack(frames, axis=0), axis=0).astype(np.uint8)
+        self._log(f"기준영상(빈 여과지) 촬영 완료 ({len(frames)}프레임 중앙값). "
+                  "이제 흰개미를 투입한 뒤 '판독 시작'을 누르세요.")
 
     # ------------------------------------------------------------
     # 판독 제어
@@ -316,10 +322,7 @@ class TermiteMonitorApp:
             messagebox.showerror(APP_TITLE, f"세션 폴더 생성 실패: {e}")
             return
         self.tracker = CentroidTracker(max_distance=60, max_missed_frames=20, move_threshold_px=3)
-<<<<<<< HEAD
         self.detection_history = []
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         self.running_analysis = True
         self.last_log_time = 0.0
         self._log("판독을 시작합니다.")
@@ -327,6 +330,18 @@ class TermiteMonitorApp:
     def stop_analysis(self):
         self.running_analysis = False
         self._log("판독을 정지했습니다.")
+
+    def manual_mark_moved(self):
+        oid = self.manual_track_id.get()
+        if self.tracker.mark_as_moved(oid, time.time()):
+            self._log(f"ID {oid}의 이동 기준 시각을 초기화했습니다.")
+        else:
+            messagebox.showwarning(APP_TITLE, f"ID {oid}를 찾을 수 없습니다.")
+
+    def reset_tracks(self):
+        self.tracker = CentroidTracker(max_distance=60, max_missed_frames=20, move_threshold_px=3)
+        self.detection_history = []
+        self._log("모든 개체 ID를 초기화했습니다.")
 
     # ------------------------------------------------------------
     # 저장 (스크린샷 / 영상 / 폴더 열기)
@@ -404,10 +419,7 @@ class TermiteMonitorApp:
                 min_area=self.min_area.get(), max_area=self.max_area.get(),
                 sensitivity=self.sensitivity.get(),
             )
-<<<<<<< HEAD
             detections = self._keep_stable_detections(detections)
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
             centroids = [(d[0], d[1]) for d in detections]
             objects = self.tracker.update(centroids, now)
 
@@ -431,7 +443,6 @@ class TermiteMonitorApp:
         if self.recording and self.video_writer is not None:
             self.video_writer.write(display)
 
-<<<<<<< HEAD
     def _keep_stable_detections(self, detections):
         current_centroids = [(d[0], d[1]) for d in detections]
         previous_centroids = self.detection_history[-1] if self.detection_history else []
@@ -444,8 +455,6 @@ class TermiteMonitorApp:
         self.detection_history = self.detection_history[-2:]
         return stable
 
-=======
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
     def _write_logs(self, objects, now, counts):
         if not self.positions_csv:
             return
@@ -466,7 +475,6 @@ class TermiteMonitorApp:
         h, w = frame_bgr.shape[:2]
         canvas_w = self.canvas.winfo_width() or 860
         canvas_h = self.canvas.winfo_height() or 620
-<<<<<<< HEAD
         scale = max(min(canvas_w / w, canvas_h / h), 0.1) * self.zoom.get()
         crop_w = min(w, max(int(canvas_w / scale), 1))
         crop_h = min(h, max(int(canvas_h / scale), 1))
@@ -476,11 +484,6 @@ class TermiteMonitorApp:
         self.canvas_scale = scale
         cropped = frame_bgr[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
         disp = cv2.resize(cropped, (max(int(crop_w * scale), 1), max(int(crop_h * scale), 1)))
-=======
-        scale = max(min(canvas_w / w, canvas_h / h), 0.1)
-        self.canvas_scale = scale
-        disp = cv2.resize(frame_bgr, (max(int(w * scale), 1), max(int(h * scale), 1)))
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
         self.tk_img = ImageTk.PhotoImage(image=img)
@@ -515,8 +518,4 @@ def main():
 
 
 if __name__ == "__main__":
-<<<<<<< HEAD
     main()
-=======
-    main()
->>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
