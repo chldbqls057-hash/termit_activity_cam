@@ -59,7 +59,10 @@ class TermiteMonitorApp:
 
         self.tracker = CentroidTracker(max_distance=60, max_missed_frames=20, move_threshold_px=3)
 
+<<<<<<< HEAD
         self.expected_count = tk.IntVar(value=0)  # 예상 투입 개체 수
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         self.no_move_sec = tk.DoubleVar(value=300.0)  # 무이동 판정 시간(초), 기본 5분
         self.min_area = tk.IntVar(value=15)
         self.max_area = tk.IntVar(value=2000)
@@ -76,9 +79,12 @@ class TermiteMonitorApp:
 
         self.last_frame_bgr = None
         self.canvas_scale = 1.0
+<<<<<<< HEAD
         self.zoom = tk.DoubleVar(value=1.0)
         self.zoom_crop_origin = (0, 0)
         self.detection_history = []
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
 
         self._build_ui()
         self._poll_camera()
@@ -109,10 +115,13 @@ class TermiteMonitorApp:
         self.camera_combo.pack(side="left", padx=4, pady=4)
         ttk.Button(cam_frame, text="연결", command=self.connect_camera).pack(side="left", padx=4)
         ttk.Button(cam_frame, text="목록 새로고침", command=self._refresh_camera_list).pack(side="left", padx=4)
+<<<<<<< HEAD
         ttk.Label(cam_frame, text="확대").pack(side="left", padx=(8, 2))
         ttk.Scale(cam_frame, from_=1.0, to=3.0, variable=self.zoom, command=self._on_zoom_changed,
               length=100).pack(side="left", padx=2)
         ttk.Button(cam_frame, text="초기화", command=lambda: self.zoom.set(1.0)).pack(side="left", padx=2)
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
 
         roi_frame = ttk.LabelFrame(right, text="② 패트리디쉬 영역")
         roi_frame.pack(fill="x", pady=4)
@@ -127,7 +136,10 @@ class TermiteMonitorApp:
 
         param_frame = ttk.LabelFrame(right, text="④ 판독 파라미터")
         param_frame.pack(fill="x", pady=4)
+<<<<<<< HEAD
         self._add_param_row(param_frame, "예상 투입 개체 수", self.expected_count, 0, 1000)
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         self._add_param_row(param_frame, "무이동 판정(초)", self.no_move_sec, 10, 3600)
         self._add_param_row(param_frame, "최소 검출면적(px²)", self.min_area, 3, 500)
         self._add_param_row(param_frame, "최대 검출면적(px²)", self.max_area, 100, 20000)
@@ -193,10 +205,13 @@ class TermiteMonitorApp:
         self.cap = cap
         self._log(f"카메라 index {idx} 연결됨")
 
+<<<<<<< HEAD
     def _on_zoom_changed(self, _value=None):
         if self.last_frame_bgr is not None:
             self._render_canvas(self.last_frame_bgr)
 
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
     # ------------------------------------------------------------
     # 영역 지정
     # ------------------------------------------------------------
@@ -223,19 +238,28 @@ class TermiteMonitorApp:
     def _on_canvas_press(self, event):
         if not self.manual_roi_mode:
             return
+<<<<<<< HEAD
         self.manual_center_tmp = (
             event.x / self.canvas_scale + self.zoom_crop_origin[0],
             event.y / self.canvas_scale + self.zoom_crop_origin[1],
         )
+=======
+        self.manual_center_tmp = (event.x / self.canvas_scale, event.y / self.canvas_scale)
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
 
     def _on_canvas_drag(self, event):
         if not self.manual_roi_mode or self.manual_center_tmp is None:
             return
         cx, cy = self.manual_center_tmp
+<<<<<<< HEAD
         x = event.x / self.canvas_scale + self.zoom_crop_origin[0]
         y = event.y / self.canvas_scale + self.zoom_crop_origin[1]
         dx = x - cx
         dy = y - cy
+=======
+        dx = event.x / self.canvas_scale - cx
+        dy = event.y / self.canvas_scale - cy
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         r = int((dx ** 2 + dy ** 2) ** 0.5)
         self.roi_center = (int(cx), int(cy))
         self.roi_radius = max(r, 5)
@@ -292,7 +316,10 @@ class TermiteMonitorApp:
             messagebox.showerror(APP_TITLE, f"세션 폴더 생성 실패: {e}")
             return
         self.tracker = CentroidTracker(max_distance=60, max_missed_frames=20, move_threshold_px=3)
+<<<<<<< HEAD
         self.detection_history = []
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         self.running_analysis = True
         self.last_log_time = 0.0
         self._log("판독을 시작합니다.")
@@ -377,7 +404,10 @@ class TermiteMonitorApp:
                 min_area=self.min_area.get(), max_area=self.max_area.get(),
                 sensitivity=self.sensitivity.get(),
             )
+<<<<<<< HEAD
             detections = self._keep_stable_detections(detections)
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
             centroids = [(d[0], d[1]) for d in detections]
             objects = self.tracker.update(centroids, now)
 
@@ -401,6 +431,7 @@ class TermiteMonitorApp:
         if self.recording and self.video_writer is not None:
             self.video_writer.write(display)
 
+<<<<<<< HEAD
     def _keep_stable_detections(self, detections):
         current_centroids = [(d[0], d[1]) for d in detections]
         previous_centroids = self.detection_history[-1] if self.detection_history else []
@@ -413,6 +444,8 @@ class TermiteMonitorApp:
         self.detection_history = self.detection_history[-2:]
         return stable
 
+=======
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
     def _write_logs(self, objects, now, counts):
         if not self.positions_csv:
             return
@@ -433,6 +466,7 @@ class TermiteMonitorApp:
         h, w = frame_bgr.shape[:2]
         canvas_w = self.canvas.winfo_width() or 860
         canvas_h = self.canvas.winfo_height() or 620
+<<<<<<< HEAD
         scale = max(min(canvas_w / w, canvas_h / h), 0.1) * self.zoom.get()
         crop_w = min(w, max(int(canvas_w / scale), 1))
         crop_h = min(h, max(int(canvas_h / scale), 1))
@@ -442,6 +476,11 @@ class TermiteMonitorApp:
         self.canvas_scale = scale
         cropped = frame_bgr[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
         disp = cv2.resize(cropped, (max(int(crop_w * scale), 1), max(int(crop_h * scale), 1)))
+=======
+        scale = max(min(canvas_w / w, canvas_h / h), 0.1)
+        self.canvas_scale = scale
+        disp = cv2.resize(frame_bgr, (max(int(w * scale), 1), max(int(h * scale), 1)))
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
         rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
         self.tk_img = ImageTk.PhotoImage(image=img)
@@ -476,4 +515,8 @@ def main():
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     main()
+=======
+    main()
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b

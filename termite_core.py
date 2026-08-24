@@ -86,11 +86,15 @@ def detect_objects(
     if gray_current.shape != gray_reference.shape:
         gray_current = cv2.resize(gray_current, (gray_reference.shape[1], gray_reference.shape[0]))
 
+<<<<<<< HEAD
     current_background = cv2.GaussianBlur(gray_current, (0, 0), 21)
     reference_background = cv2.GaussianBlur(gray_reference, (0, 0), 21)
     normalized_current = cv2.divide(gray_current, current_background, scale=128)
     normalized_reference = cv2.divide(gray_reference, reference_background, scale=128)
     diff = cv2.absdiff(normalized_current, normalized_reference)
+=======
+    diff = cv2.absdiff(gray_current, gray_reference)
+>>>>>>> e72ad628a9703fcdeca6b7b5105ee6cc00710f0b
     diff = cv2.GaussianBlur(diff, (5, 5), 0)
     _, thresh = cv2.threshold(diff, int(sensitivity), 255, cv2.THRESH_BINARY)
 
