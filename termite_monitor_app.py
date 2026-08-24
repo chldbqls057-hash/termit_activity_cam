@@ -44,6 +44,8 @@ class TermiteMonitorApp:
     ROI_INNER_RATIO = 0.95
     # 기준영상(빈 여과지) 촬영 시 잡음을 줄이기 위해 여러 프레임을 모아 중앙값을 사용
     REFERENCE_CAPTURE_FRAMES = 15
+    # '분리 민감도' 콤보박스 -> watershed 피크 임계 비율. 낮을수록 더 쉽게 두 덩어리로 나눈다.
+    SPLIT_SENSITIVITY_MAP = {"낮음": 0.56, "보통": 0.62, "높음": 0.69}
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -139,6 +141,29 @@ class TermiteMonitorApp:
         self._add_param_row(param_frame, "최대 검출면적(px²)", self.max_area, 100, 20000)
         self._add_param_row(param_frame, "민감도(임계값)", self.sensitivity, 5, 100)
 
+        self.split_touching = tk.BooleanVar(value=True)
+        ttk.Checkbutton(param_frame, text="겹친 개체 자동 분리", variable=self.split_touching).pack(
+            anchor="w", padx=4, pady=(4, 0))
+        split_row = ttk.Frame(param_frame)
+        split_row.pack(fill="x", padx=4, pady=2)
+        ttk.Label(split_row, text="분리 민감도", width=16).pack(side="left")
+        self.split_sensitivity = tk.StringVar(value="보통")
+        ttk.Combobox(
+            split_row, textvariable=self.split_sensitivity, width=8, state="readonly",
+            values=["낮음", "보통", "높음"],
+        ).pack(side="left")
+        split_note = ttk.Label(
+            param_frame,
+            text="'낮음'일수록 뭉친 덩어리를 더 쉽게 나눕니다. 여전히 하나로 뭉쳐 보이면"
+                 " 낮음으로, 낱개가 과하게 쪼개지면 높음으로 바꿔보세요.",
+            wraplength=340, foreground="#555",
+        )
+        split_note.pack(fill="x", padx=4, pady=(0, 2))
+
+        self.show_mask = tk.BooleanVar(value=False)
+        ttk.Checkbutton(param_frame, text="검출 마스크 미리보기 표시", variable=self.show_mask).pack(
+            anchor="w", padx=4, pady=(2, 4))
+
         run_frame = ttk.LabelFrame(right, text="⑤ 판독 제어")
         run_frame.pack(fill="x", pady=4)
         ttk.Button(run_frame, text="▶ 판독 시작", command=self.start_analysis).pack(fill="x", padx=4, pady=2)
@@ -171,6 +196,8 @@ class TermiteMonitorApp:
         self.lbl_dead.pack(anchor="w", padx=4)
         self.lbl_total = ttk.Label(status_frame, text="총 개체수: 0")
         self.lbl_total.pack(anchor="w", padx=4)
+        self.lbl_mismatch = ttk.Label(status_frame, text="", foreground="#b30000", wraplength=340)
+        self.lbl_mismatch.pack(anchor="w", padx=4, pady=(2, 0))
 
         log_frame = ttk.LabelFrame(self.root, text="로그")
         log_frame.pack(fill="x", padx=8, pady=(0, 8))
@@ -412,12 +439,15 @@ class TermiteMonitorApp:
 
         counts = {"활동": 0, "관찰중": 0, "사멸의심": 0}
 
+        mask = None
         if self.running_analysis and self.reference_gray is not None:
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-            detections, _ = detect_objects(
+            detections, mask = detect_objects(
                 gray, self.reference_gray, self.roi_mask,
                 min_area=self.min_area.get(), max_area=self.max_area.get(),
                 sensitivity=self.sensitivity.get(),
+                split_touching=self.split_touching.get(),
+                split_peak_ratio=self.SPLIT_SENSITIVITY_MAP.get(self.split_sensitivity.get(), 0.62),
             )
             detections = self._keep_stable_detections(detections)
             centroids = [(d[0], d[1]) for d in detections]
@@ -436,6 +466,10 @@ class TermiteMonitorApp:
                 self.last_log_time = now
 
             self._update_status_labels(counts)
+            self._update_mismatch_warning(sum(counts.values()))
+
+        if self.show_mask.get() and mask is not None:
+            display = self._embed_mask_preview(display, mask)
 
         self.last_frame_bgr = display
         self._render_canvas(display)
@@ -495,6 +529,31 @@ class TermiteMonitorApp:
         self.lbl_observing.config(text=f"관찰중: {counts.get('관찰중', 0)}")
         self.lbl_dead.config(text=f"사멸의심: {counts.get('사멸의심', 0)}")
         self.lbl_total.config(text=f"총 개체수: {sum(counts.values())}")
+
+    def _update_mismatch_warning(self, detected_count: int) -> None:
+        expected = self.expected_count.get()
+        if expected > 0 and detected_count != expected:
+            self.lbl_mismatch.config(
+                text=f"⚠ 검출 {detected_count}개 / 예상 투입 {expected}개 불일치 "
+                     "— 겹친 개체가 있을 수 있습니다. '검출 마스크 미리보기'로 확인 후 "
+                     "분리 민감도·최소/최대 면적을 조정하세요."
+            )
+        else:
+            self.lbl_mismatch.config(text="")
+
+    @staticmethod
+    def _embed_mask_preview(frame_bgr, mask):
+        """검출 이진 마스크를 화면 우하단에 작게 겹쳐 보여준다 (파라미터 튜닝용)."""
+        output = frame_bgr.copy()
+        mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        width = max(160, frame_bgr.shape[1] // 4)
+        height = int(round(mask.shape[0] * width / mask.shape[1]))
+        mask_bgr = cv2.resize(mask_bgr, (width, height), interpolation=cv2.INTER_NEAREST)
+        x = frame_bgr.shape[1] - width - 12
+        y = frame_bgr.shape[0] - height - 12
+        cv2.rectangle(output, (x - 2, y - 2), (x + width + 2, y + height + 2), (255, 255, 255), 2)
+        output[y:y + height, x:x + width] = mask_bgr
+        return output
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")

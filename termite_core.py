@@ -166,12 +166,17 @@ def detect_objects(
     split_area_factor: float = 2.2,
     split_peak_ratio: float = 0.62,
     split_max_parts: int = 4,
+    cluster_area_multiplier: float = 3.0,
 ) -> Tuple[List[Tuple[float, float, float]], np.ndarray]:
     """기준(빈 여과지) 영상과의 차이를 이용해 개체 후보를 검출한다.
 
     Args:
         sensitivity: 차분 이진화 임계값 (낮을수록 민감 = 작은 차이도 검출)
         split_touching: 서로 붙어있는 개체를 watershed로 분리할지 여부
+        cluster_area_multiplier: watershed 분리가 실패한(피크가 하나뿐이라 나뉘지 않은)
+            큰 뭉치는 원래대로라면 max_area를 넘어 완전히 버려져 '검출 자체가 안 되는'
+            문제가 생긴다. 이런 미분리 뭉치는 max_area의 이 배수까지는 최소 1개체로라도
+            검출 목록에 남겨서, 화면에서 사라지는 대신 하나로 뭉쳐 보이게 한다.
 
     Returns:
         detections: [(cx, cy, area), ...]  (x좌표 기준 정렬, 재현성 확보)
@@ -199,6 +204,7 @@ def detect_objects(
 
     detections = []
     for c in contours:
+        raw_area = cv2.contourArea(c)
         candidates = (
             _split_touching_contour(
                 c, thresh.shape, min_area, split_area_factor, split_peak_ratio, split_max_parts
@@ -206,10 +212,21 @@ def detect_objects(
             if split_touching
             else [c]
         )
+        # split_touching이 시도됐지만 뚜렷한 두 번째 피크가 없어 분리에 실패한 경우
+        # (candidates가 원본 컨투어 1개 그대로) -> 여러 개체가 뭉쳐서 하나의 큰 덩어리로
+        # 남은 것일 수 있다. 이런 미분리 뭉치를 max_area 기준으로 완전히 버리면 화면에서
+        # 개체가 통째로 사라져 '인식이 안 되는' 것처럼 보이므로, 배수 한도 내에서는
+        # 최소 1개체로라도 남긴다.
+        unresolved_cluster = (
+            split_touching and len(candidates) == 1 and raw_area >= min_area * split_area_factor
+        )
         for candidate in candidates:
             area = cv2.contourArea(candidate)
-            if area < min_area or area > max_area:
+            if area < min_area:
                 continue
+            if area > max_area:
+                if not (unresolved_cluster and area <= max_area * cluster_area_multiplier):
+                    continue
             m = cv2.moments(candidate)
             if m["m00"] == 0:
                 continue
